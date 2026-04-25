@@ -1,0 +1,81 @@
+# Bumps Render's MIN_CLIENT_VERSION env var to match the published release tag
+# so every release becomes a forced update on the auth server.
+#
+# Required repo secrets (Settings → Secrets and variables → Actions):
+#   RENDER_API_KEY     — https://dashboard.render.com/u/settings#api-keys
+#   RENDER_SERVICE_ID  — srv-xxxxxxxxxxxxxxxxx (from your Render service URL)
+
+name: Sync MIN_CLIENT_VERSION on release
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Extract version from tag
+        id: ver
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          VERSION="${TAG#v}"   # strip leading v if present
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Resolved release version: $VERSION"
+
+      - name: Update Render MIN_CLIENT_VERSION
+        env:
+          RENDER_API_KEY:    ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
+          NEW_VERSION:       ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          # Pull current env var list — Render returns [{envVar:{key,value}}, …]
+          CURRENT=$(curl -fsS \
+            -H "Authorization: Bearer $RENDER_API_KEY" \
+            -H "Accept: application/json" \
+            "https://api.render.com/v1/services/$RENDER_SERVICE_ID/env-vars?limit=200")
+
+          # Build the new full env-var array, preserving everything except
+          # MIN_CLIENT_VERSION (which we set to NEW_VERSION). If the key
+          # didn't exist before, append it.
+          UPDATED=$(echo "$CURRENT" | jq --arg ver "$NEW_VERSION" '
+            ( [ .[].envVar ]
+              | map(if .key == "MIN_CLIENT_VERSION"
+                    then .value = $ver
+                    else . end) )
+            as $base
+            | (if ($base | any(.key == "MIN_CLIENT_VERSION"))
+               then $base
+               else $base + [{"key":"MIN_CLIENT_VERSION","value":$ver}] end)
+          ')
+
+          # Render expects bulk PUT to replace the full list.
+          curl -fsS -X PUT \
+            -H "Authorization: Bearer $RENDER_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$UPDATED" \
+            "https://api.render.com/v1/services/$RENDER_SERVICE_ID/env-vars" \
+            > /tmp/render-resp.json
+
+          echo "✅ MIN_CLIENT_VERSION = $NEW_VERSION"
+          echo "Render response (first 400 chars):"
+          head -c 400 /tmp/render-resp.json; echo
+
+      - name: Trigger Render redeploy
+        env:
+          RENDER_API_KEY:    ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
+        run: |
+          # Updating env vars normally triggers a redeploy automatically,
+          # but call deploys explicitly so the new MIN_VERSION is live before
+          # users hit the toast.
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $RENDER_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{"clearCache":"do_not_clear"}' \
+            "https://api.render.com/v1/services/$RENDER_SERVICE_ID/deploys" \
+            > /tmp/deploy-resp.json
+          echo "✅ Redeploy triggered"
+          head -c 400 /tmp/deploy-resp.json; echo
