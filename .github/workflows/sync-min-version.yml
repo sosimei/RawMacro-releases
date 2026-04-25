@@ -35,7 +35,7 @@ jobs:
           CURRENT=$(curl -fsS \
             -H "Authorization: Bearer $RENDER_API_KEY" \
             -H "Accept: application/json" \
-            "https://api.render.com/v1/services/$RENDER_SERVICE_ID/env-vars?limit=200")
+            "https://api.render.com/v1/services/$RENDER_SERVICE_ID/env-vars?limit=50")
 
           # Build the new full env-var array, preserving everything except
           # MIN_CLIENT_VERSION (which we set to NEW_VERSION). If the key
